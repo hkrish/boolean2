@@ -11,15 +11,13 @@
  * undocumented to directly adapt from)
  * 
  * Supported
- *  - paperjs Path objects
- *  - Boolean Union operations
- *  - Boolean Intersection operations
- *  - handles path complexity quite nicely
+ *  - paperjs Path and CompoundPath objects
+ *  - Boolean Union
+ *  - Boolean Intersection
+ *  - Boolean Subtraction
  *
  * Not supported yet ( which I would like to see supported )
- *  - Compound Paths as input ( however compound paths are correctly handled in the output )
  *  - Self-intersecting Paths
- *  - Boolean Subtraction operation ( depends on compound paths as input )
  *  - Paths are clones of each other that ovelap exactly on top of each other!
  *
  * In the Not-supported-yet list, the first three can be easily implemented, 
@@ -61,10 +59,10 @@
 
   // path1 - path2
   Subtraction: function( lnk, isInsidePath1, isInsidePath2 ){
-    var lnkid = lnk.id;
-    if( lnkid === 1 && isInsidePath2 ){
+    var pathid = lnk.pathId;
+    if( pathid === 1 && isInsidePath2 ){
       return false;
-    } else if( lnkid === 2 && !isInsidePath1 ){
+    } else if( pathid === 2 && !isInsidePath1 ){
       return false;
     }
     return true;
@@ -170,7 +168,7 @@
  * @param  {Integer} id
  * @return {Array} Links
  */
- function makeGraph( path, id, isBaseContour ){
+ function makeGraph_old( path, id, isBaseContour ){
   var graph = [];
   var segs = path.segments, prevNode = null, firstNode = null, nuLink, nuNode;
   for( i = 0, l = segs.length; i < l; i++ ){
@@ -191,6 +189,36 @@
   return graph;
 }
 
+function _ensureIds( path ){
+  var i, l, children;
+  if( path instanceof CompoundPath ){
+    children = path.children;
+    for (i = 0, l = children.length; i < l; i++) {
+      _makeId( children[i] );
+    }
+  } else {
+    var segs = path.segments;
+    for (i = 0, l = segs.length; i < l; i++) {
+      segs[i].id = UNIQUE_ID++;
+    }
+    // var crvs = path.curves;
+    // for (i = 0, l = crvs.length; i < l; i++) {
+    //   crvs[i].id = UNIQUE_ID++;
+    // }
+  }
+}
+
+function _reverse( path ) {
+  var i, l, children;
+  if( path instanceof CompoundPath ){
+    children = path.children;
+    for (i = 0, l = children.length; i < l; i++) {
+      children[i].reverse();
+    }
+  } else {
+    path.reverse();
+  }
+}
 
 /**
  * makes a graph for a pathItem
@@ -198,13 +226,21 @@
  * @param  {Integer} id
  * @return {Array} Links
  */
-function makeGraph2( path, id ){
-  var graph = [];
-  var curves = path.getCurves(), firstChildCount , counter, isBaseContour = true, i, len;
+function makeGraph( path ){
+  _ensureIds( path );
+  var curves = path.getCurves(), firstChildCount,
+    isBaseContour = true, i, len, link,
+    pathId = path.id;
   firstChildCount = ( path instanceof CompoundPath )? path.children[0].curves.length : path.curves.length;
-  // Segments need an ID, so that we can compare them
   for (i = 0, len = curves.length; i < len; i++, firstChildCount--) {
+    link = curves[i];
+    link._pathId = pathId;
+    link._baseContour = (firstChildCount > 0);
+    link.segment1._curveOut = link;
+    link.segment2._curveIn = link;
+    link.intersections = [];
   }
+  return curves;
 }
 
 
@@ -258,49 +294,35 @@ function computeBoolean( _path1, _path2, operator ){
   // The boolean operation may modify the original paths
   var path1 = _path1.clone();
   var path2 = _path2.clone();
+  path1.style = path2.style = null;
   // if( !path1.clockwise ){ path1.reverse(); }
   // if( !path2.clockwise ){ path2.reverse(); }
   // 
-  var i, j, k, l, lnk, crv, node, nuNode, leftLink, rightLink;
+  var path1Id = path1.id, path2Id = path2.id;
+  var i, j, k, l, crv, node, nuSeg, leftLink, rightLink;
 
   // Prepare the graphs. Graphs are list of Links that retains 
   // full connectivity information. The order of links in a graph is not important
   // That allows us to sort and merge graphs and 'splice' links with their splits easily.
   // Also, this is the place to resolve self-intersecting paths
   var graph = [], path1Children, path2Children, base;
-  if( path1 instanceof CompoundPath ){
-    path1Children = path1.children;
-    for (i = 0, base = true, l = path1Children.length; i < l; i++, base = false) {
-      path1Children[i].closed = true;
-      graph = graph.concat( makeGraph( path1Children[i], 1, base ) );
-    }
-  } else {
-    path1.closed = true;
-    // path1.clockwise = true;
-    graph = graph.concat( makeGraph( path1, 1, 1, true ) );
-  }
+  graph = makeGraph( path1 );
 
   // if operator === BooleanOps.Subtraction, then reverse path2
   // so that the nodes and links will link correctly
-  var reverse = ( operator === BooleanOps.Subtraction )? true: false;
-  if( path2 instanceof CompoundPath ){
-    path2Children = path2.children;
-    for (i = 0, base = true, l = path2Children.length; i < l; i++, base = false) {
-      path2Children[i].closed = true;
-      if( reverse ){ path2Children[i].reverse(); }
-      graph = graph.concat( makeGraph( path2Children[i], 2, i + 1, base ) );
-    }
-  } else {
-    path2.closed = true;
-    // path2.clockwise = true;
-    if( reverse ){ path2.reverse(); }
-    graph = graph.concat( makeGraph( path2, 2, 1, true ) );
+  if ( operator === BooleanOps.Subtraction ){
+    _reverse( path2 );
   }
+
+  graph = graph.concat( makeGraph( path2 ) );
 
   console.log( "Total curves: " + graph.length );
 
+  window.g = graph;
+  // return;
+
   // Sort function to sort intersections according to the 'parameter'(t) in a link (curve)
-  function ixSort( a, b ){ return a._parameter - b._parameter; }
+  function ixSort( a, b ){ return a.parameter - b.parameter; }
 
   /*
    * Pass 1:
@@ -311,25 +333,19 @@ function computeBoolean( _path1, _path2, operator ){
    * The rest of the algorithm can easily be modified to resolve self-intersections
    */
    for ( i = graph.length - 1; i >= 0; i--) {
-    var c1 = graph[i].getCurve();
+    var c1 = graph[i];
     var v1 = c1.getValues();
     for ( j = i -1; j >= 0; j-- ) {
-      if( graph[j].id === graph[i].id ){ continue; }
-      var c2 = graph[j].getCurve();
+      if( graph[j]._pathId === graph[i]._pathId ){ continue; }
+      var c2 = graph[j];
       var v2 = c2.getValues();
       var loc = [];
-      Curve._addIntersections( v1, v2, loc );
+      Curve._addIntersections( v1, v2, c1, loc );
       if( loc.length ){
         for (k = 0, l=loc.length; k<l; k++) {
-          var loc1 = loc[k].clone();
-          loc1._intersectionID = loc[k]._intersectionID;
-          loc1._parameter = c1.getParameterOf( loc[k] ); // For sorting on curve1
-          // loc1._parameter = c1.getNearestLocation( loc[k] ).parameter; // For sorting on curve1
-          graph[i].intersections.push( loc1 );
-          var loc2 = loc[k].clone();
-          loc2._intersectionID = loc[k]._intersectionID;
-          loc2._parameter = c2.getParameterOf( loc[k] ); // For sorting on curve2
-          // loc2._parameter = c2.getNearestLocation( loc[k] ).parameter; // For sorting on curve2
+          graph[i].intersections.push( loc[k] );
+          var loc2 = new CurveLocation( c2, null, loc[k].point );
+          loc2.id = loc[k].id;
           graph[j].intersections.push( loc2 );
         }
       }
@@ -348,26 +364,21 @@ function computeBoolean( _path1, _path2, operator ){
       // Sort the intersections if there is more than one
       if( graph[i].intersections.length > 1 ){ ix.sort( ixSort ); }
       // Remove the graph link, this link has to be split and replaced with the splits
-      lnk = graph.splice( i, 1 )[0];
-      for (j =0, l=ix.length; j<l && lnk; j++) {
-        var splitLinks = [];
-        crv = lnk.getCurve();
+      crv = graph.splice( i, 1 )[0];
+      for (j =0, l=ix.length; j<l && crv; j++) {
         // We need to recalculate parameter after each curve split
-        // This operation (except for recalculating the curve parameter),
-        // is fairly similar to Curve.split method, except that it operates on Node and Link objects.
-        var param = crv.getParameterOf( ix[j] );
-        // var param = crv.getNearestLocation( ix[j] ).parameter;
+        var param = crv.getParameterOf( ix[j].point );
+        // Check if intersection falls on an existing node
         if( param === 0.0 || param === 1.0) {
-          // Intersection falls on an existing node
-          // there is no need to split the link
-          nuNode = ( param === 0.0 )? lnk.nodeIn : lnk.nodeOut;
-          nuNode.type = INTERSECTION_NODE;
-          nuNode._intersectionID = ix[j]._intersectionID;
+          // there is no need to split the curve
+          nuSeg = ( param === 0.0 )? crv.segment1 : crv.segment2;
+          nuSeg._type = INTERSECTION_NODE; // This is a four-way node
+          nuNode._intersectionID = ix[j].id;
           if( param === 1.0 ){
             leftLink = null;
-            rightLink = lnk;
+            rightLink = crv;
           } else {
-            leftLink = lnk;
+            leftLink = crv;
             rightLink = null;
           }
         } else {
@@ -377,20 +388,26 @@ function computeBoolean( _path1, _path2, operator ){
           // Make new link and convert handles from absolute to relative
           // TODO: check if link is linear and set handles to null
           var ixPoint = new Point( left[6], left[7] );
-          nuNode = new Node( ixPoint, new Point(left[4] - ixPoint.x, left[5] - ixPoint.y),
-            new Point(right[2] - ixPoint.x, right[3] - ixPoint.y), lnk.id, lnk.isBaseContour );
-          nuNode.type = INTERSECTION_NODE;
-          nuNode._intersectionID = ix[j]._intersectionID;
+          nuSeg = new Segment( ixPoint, new Point(left[4] - ixPoint.x, left[5] - ixPoint.y),
+            new Point(right[2] - ixPoint.x, right[3] - ixPoint.y) );
+          nuSeg.id = UNIQUE_ID++;
+          nuSeg._pathId = crv._pathId;
+          nuSeg._type = INTERSECTION_NODE;
+          nuSeg._intersectionID = ix[j].id;
           // clear the cached Segment on original end nodes and Update their handles
-          lnk.nodeIn._segment = null;
-          var tmppnt = lnk.nodeIn.point;
-          lnk.nodeIn.handleOut = new Point( left[2] - tmppnt.x, left[3] - tmppnt.y );
-          lnk.nodeOut._segment = null;
-          tmppnt = lnk.nodeOut.point;
-          lnk.nodeOut.handleIn = new Point( right[4] - tmppnt.x, right[5] - tmppnt.y );
+          var tmppnt = crv.segment1.point;
+          crv.segment1.handleOut = new Point( left[2] - tmppnt.x, left[3] - tmppnt.y );
+          tmppnt = crv.segment2.point;
+          crv.segment2.handleIn = new Point( right[4] - tmppnt.x, right[5] - tmppnt.y );
           // Make new links after the split
-          leftLink = new Link( lnk.nodeIn, nuNode, lnk.id, lnk.isBaseContour );
-          rightLink = new Link( nuNode, lnk.nodeOut, lnk.id, lnk.isBaseContour );
+          leftLink = Curve.create( null, crv.segment1, nuSeg );
+          rightLink = Curve.create( null, nuSeg, crv.segment2 );
+          leftLink.segment1._curveOut = leftLink;
+          nuSeg._curveIn = leftLink;
+          nuSeg._curveOut = rightLink;
+          rightLink.segment2._curveIn = rightLink;
+          leftLink._pathId = rightLink._pathId = crv._pathId;
+          leftLink._baseContour = rightLink._baseContour = crv._baseContour;
         }
         // Add the first split link back to the graph, since we sorted the intersections
         // already, this link should contain no more intersections to the left.
@@ -399,11 +416,11 @@ function computeBoolean( _path1, _path2, operator ){
         }
         // continue with the second split link, to see if 
         // there are more intersections to deal with
-        lnk = rightLink;
+        crv = rightLink;
       }
       // Add the last split link back to the graph
-      if( lnk ){
-        graph.splice( i, 0, lnk );
+      if( crv ){
+        graph.splice( i, 0, crv );
       }
     }
   }
@@ -428,65 +445,100 @@ function computeBoolean( _path1, _path2, operator ){
 
   // step 1: discard invalid links according to the boolean operator
   for ( i = graph.length - 1; i >= 0; i--) {
-    lnk = graph[i];
-    crv = lnk.getCurve();
+    crv = graph[i];
     // var midPoint = new Point(lnk.nodeIn.point);
     var midPoint = crv.getPoint( 0.5 );
-    var insidePath1 = (lnk.id === 1 )? false : path1.contains( midPoint );
-    var insidePath2 = (lnk.id === 2 )? false : path2.contains( midPoint );
-    if( !operator( lnk, insidePath1, insidePath2 ) ){
+    var insidePath1 = (crv._pathId === path1Id )? false : path1.contains( midPoint );
+    var insidePath2 = (crv._pathId === path2Id )? false : path2.contains( midPoint );
+    if( !operator( crv, insidePath1, insidePath2 ) ){
       // lnk = graph.splice( i, 1 )[0];
-      lnk.INVALID = true;
-      lnk.nodeIn.linkOut = null;
-      lnk.nodeOut.linkIn = null;
+      crv._INVALID = true;
+      crv.segment1._curveOut = null;
+      crv.segment2._curveIn = null;
     }
   }
 
   // step 2: Match nodes according to their _intersectionID and merge them together
   var len = graph.length;
   while( len-- ){
-    node = graph[len].nodeIn;
-    if( node.type === INTERSECTION_NODE ){
+    node = graph[len].segment1;
+    if( node._type === INTERSECTION_NODE ){
       var otherNode = null;
       for (i = len - 1; i >= 0; i--) {
-        var tmpnode = graph[i].nodeIn;
+        var tmpnode = graph[i].segment1;
+        // console.log(node.id, node._intersectionID, tmpnode.id, tmpnode._intersectionID );
         if( tmpnode._intersectionID === node._intersectionID &&
-         tmpnode.uniqueID !== node.uniqueID ) {
+         tmpnode.id !== node.id ) {
           otherNode = tmpnode;
-        break;
+          break;
+        }
       }
-    }
-    if( otherNode ) {
+      if( otherNode ) {
+        console.log( node.id, otherNode.id )
         //Check if it is a self-intersecting Node
-        if( node.id === otherNode.id ){
+        if( node._pathId === otherNode._pathId ){
           // Swap the outgoing links, this will resolve a knot and create two paths,
           // the portion of the original path on one side of a self crossing is counter-clockwise,
           // so one of the resulting paths will also be counter-clockwise
-          var tmp = otherNode.linkOut;
-          otherNode.linkOut = node.linkOut;
-          node.linkOut = tmp;
+          var tmp = otherNode._curveOut;
+          otherNode._curveOut = node._curveOut;
+          node._curveOut = tmp;
           tmp = otherNode.handleOut;
           otherNode.handleOut = node.handleOut;
           node.handleOut = tmp;
-          node.type = otherNode.type = NORMAL_NODE;
+          node._type = otherNode._type = NORMAL_NODE;
           node._intersectionID = null;
-          node._segment = otherNode._segment = null;
         } else {
           // Merge the nodes together, by adding this node's information to the other node
-          otherNode.idB = node.id;
-          otherNode.isBaseContourB = node.isBaseContour;
-          otherNode.handleBIn = node.handleIn;
-          otherNode.handleBOut = node.handleOut;
-          otherNode.linkBIn = node.linkIn;
-          otherNode.linkBOut = node.linkOut;
-          otherNode._segment = null;
-          if( node.linkIn ){ node.linkIn.nodeOut = otherNode; }
-          if( node.linkOut ){ node.linkOut.nodeIn = otherNode; }
+          // otherNode._idB = node.id;
+          // otherNode._baseContourB = node._baseContour;
+          // otherNode._handleBIn = node.handleIn;
+          // otherNode._handleBOut = node.handleOut;
+          // otherNode._curveBIn = node._curveIn;
+          // otherNode._curveBOut = node._curveOut;
+          // if( node._curveIn ){ node._curveIn.segment2 = otherNode; }
+          // if( node._curveOut ){ node._curveOut.segment1 = otherNode; }
+
+          // Why do I have to do this again??
+          node._idB = otherNode.id;
+          node._baseContourB = otherNode._baseContour;
+          node._handleBIn = otherNode.handleIn;
+          node._handleBOut = otherNode.handleOut;
+          node._curveBIn = otherNode._curveIn;
+          node._curveBOut = otherNode._curveOut;
+          if( otherNode._curveIn ){ otherNode._curveIn.segment2 = node; }
+          if( otherNode._curveOut ){ otherNode._curveOut.segment1 = node; }
+
           // Clear this node's intersectionID, so that we won't iterate over it again
+          // node._type = NORMAL_NODE;
           node._intersectionID = null;
         }
       }
     }
+  }
+
+  function reorient( seg ){
+    console.log(seg._type, seg.id, seg)
+    if( seg._type !== INTERSECTION_NODE ){
+      return seg;
+    }
+    // point seg._curveIn and seg._curveOut to those active ones
+    // also point seg.handleIn and seg.handleOut to correct in and out handles
+    // If a link is null, make sure the corresponding handle is also null
+    seg.handleIn = (seg._curveIn)? seg.handleIn : null;
+    seg.handleOut = (seg._curveOut)? seg.handleOut : null;
+    seg.handleBIn = (seg._curveBIn)? seg.handleBIn : null;
+    seg.handleBOut = (seg._curveBOut)? seg.handleBOut : null;
+    // Select the valid links
+    seg._curveIn = seg._curveIn || seg._curveBIn; // _curveIn
+    seg._curveOut = seg._curveOut || seg._curveBOut; // _curveOut
+    // Also update the references in links to point to "seg" Node
+    seg._curveIn.segment2 = seg;  // _curveIn.nodeEnd
+    seg._curveOut.segment1 = seg;  // _curveOut.nodeStart
+    seg.handleIn = seg.handleIn || seg.handleBIn;
+    seg.handleOut = seg.handleOut || seg.handleBOut;
+    seg._baseContour = seg._baseContour | seg._baseContourB;
+    return seg;
   }
 
   // Final step: Retrieve the resulting paths from the graph
@@ -496,26 +548,28 @@ function computeBoolean( _path1, _path2, operator ){
     firstNode = nextNode = null;
     len = graph.length;
     while( len-- ){
-      if( !graph[len].INVALID && !graph[len].nodeIn.visited && !firstNode ){
-        if( !foundBasePath && graph[len].isBaseContour === 1 ){
-          firstNode = graph[len].nodeIn;
+      if( !graph[len]._INVALID && !graph[len].segment1.visited && !firstNode ){
+        if( !foundBasePath && graph[len]._baseContour ){
+          firstNode = graph[len].segment1;
           foundBasePath = true;
           break;
         } else if(foundBasePath){
-          firstNode = graph[len].nodeIn;
+          firstNode = graph[len].segment1;
           break;
         }
       }
     }
     if( firstNode ){
       var path = new Path();
-      path.add( firstNode.getSegment( true ) );
+      path.add( reorient( firstNode ) );
       firstNode.visited = true;
-      nextNode = firstNode.linkOut.nodeOut;
-      while( firstNode.uniqueID !== nextNode.uniqueID ){
-        path.add( nextNode.getSegment( true ) );
+      console.log(firstNode.point)
+      nextNode = firstNode._curveOut.segment2;
+      while( firstNode.id !== nextNode.id ){
+        path.add( reorient( nextNode ) );
         nextNode.visited = true;
-        nextNode = nextNode.linkOut.nodeOut;
+      console.log(nextNode.point)
+        nextNode = nextNode._curveOut.segment2;
       }
       path.closed = true;
       // path.clockwise = true;
@@ -523,6 +577,9 @@ function computeBoolean( _path1, _path2, operator ){
     }
   }
   boolResult = boolResult.reduce();
+
+  path1.remove();
+  path2.remove();
 
   return boolResult;
 }
@@ -557,31 +614,35 @@ var Numerical = {
 
 // paperjs' Curve._addIntersections modified to return just intersection Point with a
 // unique id.
-paper.Curve._addIntersections = function(v1, v2, locations) {
-  var bounds1 = Curve.getBounds(v1),
-  bounds2 = Curve.getBounds(v2);
-  if (bounds1.touches(bounds2)) {
-    // See if both curves are flat enough to be treated as lines.
-    if (Curve.isFlatEnough(v1, /*#=*/ Numerical.TOLERANCE) &&
-      Curve.isFlatEnough(v2, /*#=*/ Numerical.TOLERANCE)) {
-      // See if the parametric equations of the lines interesct.
-    var point = new Line(v1[0], v1[1], v1[6], v1[7], false)
-    .intersect(new Line(v2[0], v2[1], v2[6], v2[7], false),
+paper.Curve._addIntersections = function(v1, v2, curve, locations) {
+    var bounds1 = Curve.getBounds(v1),
+      bounds2 = Curve.getBounds(v2);
+    if (bounds1.touches(bounds2)) {
+      // See if both curves are flat enough to be treated as lines.
+      if (Curve.isFlatEnough(v1, /*#=*/ Numerical.TOLERANCE) &&
+       Curve.isFlatEnough(v2, /*#=*/ Numerical.TOLERANCE)) {
+        // See if the parametric equations of the lines interesct.
+        var point = new Line(v1[0], v1[1], v1[6], v1[7], false)
+            .intersect(new Line(v2[0], v2[1], v2[6], v2[7], false),
               // Filter out beginnings of the curves, to avoid
               // duplicate solutions where curves join.
               true, false);
-    if (point){
-      point._intersectionID = IntersectionID++;
-      locations.push( point );
+        if (point){
+          // Passing null for parameter leads to lazy determination of
+          // parameter values in CurveLocation#getParameter() only
+          // once they are requested.
+          var loc = new CurveLocation(curve, null, point);
+          loc.id = ++UNIQUE_ID;
+          locations.push( loc );
+        }
+      } else {
+        // Subdivide both curves, and see if they intersect.
+        var v1s = Curve.subdivide(v1),
+          v2s = Curve.subdivide(v2);
+        for (var i = 0; i < 2; i++)
+          for (var j = 0; j < 2; j++)
+            this._addIntersections(v1s[i], v2s[j], curve, locations);
+      }
     }
-  } else {
-    // Subdivide both curves, and see if they intersect.
-    var v1s = Curve.subdivide(v1),
-    v2s = Curve.subdivide(v2);
-    for (var i = 0; i < 2; i++)
-      for (var j = 0; j < 2; j++)
-        this._addIntersections(v1s[i], v2s[j], locations);
-    }
-  }
-  return locations;
-};
+    return locations;
+  };
