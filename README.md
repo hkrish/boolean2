@@ -1,4 +1,3 @@
-
 Vector boolean operations on paperjs objects.
 This is mostly written for clarity (I hope it is clear) and compatibility,
 not optimised for performance, and has to be tested heavily for stability.
@@ -20,6 +19,10 @@ Not supported yet ( which I would like to see supported )
 - Paths are clones of each other that ovelap exactly on top of each other!
 
 This is meant to be integrated into the paperjs library in the near future.
+
+This has been integrated into 
+[paperjs](https://github.com/paperjs/paper.js/blob/master/src/path/PathItem.Boolean.js)
+library.
 
 ------
 Harikrishnan Gopalakrishnan
